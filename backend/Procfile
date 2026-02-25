@@ -1,1 +1,1 @@
-web: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+web: python clean_and_migrate.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
