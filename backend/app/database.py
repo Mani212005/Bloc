@@ -22,7 +22,12 @@ if _debug_url and "@" in _debug_url:
 else:
     print(f"DATABASE_URL BEING USED: {_debug_url}")
 
-engine = create_engine(DATABASE_URL, future=True)
+engine = create_engine(
+    DATABASE_URL,
+    future=True,
+    pool_pre_ping=True,
+    connect_args={"connect_timeout": 10},
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 
 Base = declarative_base()
