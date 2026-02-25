@@ -1,188 +1,162 @@
-import { useEffect, useMemo, useState } from 'react'
-import './App.css'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { listLeads, listCallers } from './api'
+import type { AssignmentEvent, Caller, LeadListItem } from './api'
+import { CallerPanel } from './components/CallerPanel'
+import { LeadsPanel } from './components/LeadsPanel'
+import { ToastContainer, showToast } from './components/Toast'
+import './index.css'
 
-type LeadListItem = {
-  id: string
-  name: string | null
-  phone: string
-  state: string | null
-  lead_source: string | null
-  assigned_caller_name: string | null
-  assignment_status: string | null
-  assignment_reason: string | null
-  assigned_at: string | null
-}
-
-type Caller = {
-  id: string
-  name: string
-  role: string | null
-  languages: string[]
-  daily_limit: number
-  assigned_states: string[]
-  leads_assigned_today: number
-  status: string
-}
-
-type AssignmentEvent = {
-  type: 'assignment'
-  payload: {
-    lead_id: string
-    caller_id: string | null
-    assignment_status: string
-    assignment_reason: string
-    timestamp: string
-  }
-}
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws/dashboard'
+const WS_RECONNECT_DELAY_MS = 3000
 
 function App() {
   const [leads, setLeads] = useState<LeadListItem[]>([])
   const [callers, setCallers] = useState<Caller[]>([])
-  const [stateFilter, setStateFilter] = useState<string>('')
-  const [callerFilter, setCallerFilter] = useState<string>('')
-  const [search, setSearch] = useState<string>('')
+  const [loadingLeads, setLoadingLeads] = useState(false)
+  const [loadingCallers, setLoadingCallers] = useState(false)
 
-  useEffect(() => {
-    void Promise.all([
-      fetch(
-        `${API_BASE_URL}/api/leads?limit=100` +
-          (stateFilter ? `&state=${encodeURIComponent(stateFilter)}` : '') +
-          (callerFilter ? `&caller_id=${encodeURIComponent(callerFilter)}` : '') +
-          (search ? `&search=${encodeURIComponent(search)}` : ''),
-      ).then((r) => r.json()),
-      fetch(`${API_BASE_URL}/api/callers`).then((r) => r.json()),
-    ]).then(([leadsRes, callersRes]) => {
-      setLeads(leadsRes ?? [])
-      setCallers(callersRes ?? [])
-    })
+  const [stateFilter, setStateFilter] = useState('')
+  const [callerFilter, setCallerFilter] = useState('')
+  const [search, setSearch] = useState('')
+
+  const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
+  const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── Data fetching ────────────────────────────────────────────────────────
+  const fetchLeads = useCallback(async () => {
+    setLoadingLeads(true)
+    try {
+      const data = await listLeads({
+        state: stateFilter || undefined,
+        caller_id: callerFilter || undefined,
+        search: search || undefined,
+        limit: 100,
+      })
+      setLeads(data)
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to load leads.', 'error')
+    } finally {
+      setLoadingLeads(false)
+    }
   }, [stateFilter, callerFilter, search])
 
-  useEffect(() => {
-    const ws = new WebSocket(WS_URL)
-    ws.onmessage = (event) => {
-      const data: AssignmentEvent = JSON.parse(event.data)
-      if (data.type === 'assignment') {
-        setLeads((prev) =>
-          prev.map((l) =>
-            l.id === data.payload.lead_id
-              ? {
-                  ...l,
-                  assignment_status: data.payload.assignment_status,
-                  assignment_reason: data.payload.assignment_reason,
-                  assigned_at: data.payload.timestamp,
-                }
-              : l,
-          ),
-        )
-      }
-    }
-    return () => {
-      ws.close()
+  const fetchCallers = useCallback(async () => {
+    setLoadingCallers(true)
+    try {
+      const data = await listCallers()
+      setCallers(data)
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to load callers.', 'error')
+    } finally {
+      setLoadingCallers(false)
     }
   }, [])
 
+  const refreshAll = useCallback(() => {
+    void fetchLeads()
+    void fetchCallers()
+  }, [fetchLeads, fetchCallers])
+
+  useEffect(() => { void fetchLeads() }, [fetchLeads])
+  useEffect(() => { void fetchCallers() }, [fetchCallers])
+
+  // ── WebSocket with auto-reconnect ────────────────────────────────────────
+  useEffect(() => {
+    function connect() {
+      setWsStatus('connecting')
+      const ws = new WebSocket(WS_URL)
+      wsRef.current = ws
+
+      ws.onopen = () => setWsStatus('connected')
+
+      ws.onmessage = (event: MessageEvent) => {
+        try {
+          const data: AssignmentEvent = JSON.parse(event.data as string)
+          if (data.type === 'assignment') {
+            const p = data.payload
+            setLeads((prev) => {
+              const exists = prev.find((l) => l.id === p.lead_id)
+              if (exists) {
+                return prev.map((l) =>
+                  l.id === p.lead_id
+                    ? { ...l, assignment_status: p.assignment_status, assignment_reason: p.assignment_reason, assigned_at: p.timestamp }
+                    : l,
+                )
+              }
+              void fetchLeads()
+              return prev
+            })
+            void fetchCallers()
+          }
+        } catch { /* ignore malformed */ }
+      }
+
+      ws.onclose = () => {
+        setWsStatus('disconnected')
+        reconnectTimerRef.current = setTimeout(connect, WS_RECONNECT_DELAY_MS)
+      }
+      ws.onerror = () => ws.close()
+    }
+
+    connect()
+    return () => {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      wsRef.current?.close()
+    }
+  }, [fetchLeads, fetchCallers])
+
+  // ── Derived state ────────────────────────────────────────────────────────
   const states = useMemo(
     () => Array.from(new Set(leads.map((l) => l.state).filter(Boolean))) as string[],
     [leads],
   )
 
+  const unassignedCount = leads.filter((l) => l.assignment_status === 'unassigned').length
+
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="app-root">
-      <header className="app-header">
-        <h1>Sales CRM Dashboard</h1>
-      </header>
-      <main className="app-layout">
-        <section className="panel">
-          <h2>Live Leads</h2>
-          <div className="filters">
-            <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}>
-              <option value="">All states</option>
-              {states.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-            <select
-              value={callerFilter}
-              onChange={(e) => setCallerFilter(e.target.value)}
-            >
-              <option value="">All callers</option>
-              {callers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name or phone"
-            />
+    <>
+      <ToastContainer />
+      <div className="app-root">
+        <header className="app-header">
+          <div className="app-header__brand">
+            <span className="app-header__logo">⚡</span>
+            <h1 className="app-header__title">Bloc CRM</h1>
           </div>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Created</th>
-                  <th>Name</th>
-                  <th>Phone</th>
-                  <th>State</th>
-                  <th>Source</th>
-                  <th>Caller</th>
-                  <th>Status</th>
-                  <th>Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leads.map((lead) => (
-                  <tr key={lead.id}>
-                    <td>{lead.assigned_at ? new Date(lead.assigned_at).toLocaleString() : ''}</td>
-                    <td>{lead.name}</td>
-                    <td>{lead.phone}</td>
-                    <td>{lead.state}</td>
-                    <td>{lead.lead_source}</td>
-                    <td>{lead.assigned_caller_name}</td>
-                    <td>{lead.assignment_status}</td>
-                    <td>{lead.assignment_reason}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="app-header__meta">
+            {unassignedCount > 0 && (
+              <span className="header-badge header-badge--warn">
+                {unassignedCount} unassigned
+              </span>
+            )}
+            <span className={`ws-indicator ws-indicator--${wsStatus}`} title={`WebSocket: ${wsStatus}`}>
+              {wsStatus === 'connected' ? '● Live' : wsStatus === 'connecting' ? '○ Connecting…' : '○ Reconnecting…'}
+            </span>
           </div>
-        </section>
-        <section className="panel">
-          <h2>Callers</h2>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>States</th>
-                  <th>Daily limit</th>
-                  <th>Assigned today</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {callers.map((c) => (
-                  <tr key={c.id}>
-                    <td>{c.name}</td>
-                    <td>{c.assigned_states.join(', ')}</td>
-                    <td>{c.daily_limit === 0 ? 'Unlimited' : c.daily_limit}</td>
-                    <td>{c.leads_assigned_today}</td>
-                    <td>{c.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </main>
-    </div>
+        </header>
+
+        <main className="app-layout">
+          <LeadsPanel
+            leads={leads}
+            callers={callers}
+            stateFilter={stateFilter}
+            callerFilter={callerFilter}
+            search={search}
+            onStateFilter={setStateFilter}
+            onCallerFilter={setCallerFilter}
+            onSearch={setSearch}
+            states={states}
+            onRefresh={refreshAll}
+          />
+          <CallerPanel callers={callers} onRefresh={refreshAll} />
+        </main>
+
+        {(loadingLeads || loadingCallers) && (
+          <div className="global-loading" aria-live="polite">Loading…</div>
+        )}
+      </div>
+    </>
   )
 }
 
