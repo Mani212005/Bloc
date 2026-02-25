@@ -3,7 +3,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -17,12 +17,23 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 
 
 def _latest_assignment_subquery():
-    la = LeadAssignment
+    """Return a subquery that has the single most-recent assignment per lead."""
+    la = LeadAssignment.__table__
+
+    # Rank assignments by assigned_at descending within each lead_id partition
+    ranked = (
+        select(
+            la,
+            func.row_number()
+            .over(partition_by=la.c.lead_id, order_by=la.c.assigned_at.desc())
+            .label("rn"),
+        )
+    ).subquery("la_ranked")
+
     return (
-        select(la)
-        .order_by(la.lead_id, la.assigned_at.desc())
-        .distinct(la.lead_id)
-        .subquery()
+        select(ranked)
+        .where(ranked.c.rn == 1)
+        .subquery("la_latest")
     )
 
 
@@ -35,20 +46,25 @@ def list_leads(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    la_sub = _latest_assignment_subquery()
-    la_alias = LeadAssignment.__table__.alias("la_latest")
+    la_latest = _latest_assignment_subquery()
 
     q = (
-        select(Lead, la_alias, Caller)
-        .join(la_alias, la_alias.c.lead_id == Lead.id, isouter=True)
-        .join(Caller, Caller.id == la_alias.c.caller_id, isouter=True)
+        select(
+            Lead,
+            la_latest.c.status.label("la_status"),
+            la_latest.c.assignment_reason.label("la_reason"),
+            la_latest.c.assigned_at.label("la_assigned_at"),
+            Caller,
+        )
+        .join(la_latest, la_latest.c.lead_id == Lead.id, isouter=True)
+        .join(Caller, Caller.id == la_latest.c.caller_id, isouter=True)
     )
 
     conditions = []
     if state:
         conditions.append(Lead.state == state)
     if caller_id:
-        conditions.append(la_alias.c.caller_id == caller_id)
+        conditions.append(la_latest.c.caller_id == caller_id)
     if search:
         pattern = f"%{search}%"
         conditions.append(or_(Lead.phone.ilike(pattern), Lead.name.ilike(pattern)))
@@ -60,7 +76,7 @@ def list_leads(
 
     rows = db.execute(q).all()
     items: list[LeadListItem] = []
-    for lead, la_row, caller in rows:
+    for lead, la_status, la_reason, la_assigned_at, caller in rows:
         items.append(
             LeadListItem(
                 id=lead.id,
@@ -69,9 +85,9 @@ def list_leads(
                 state=lead.state,
                 lead_source=lead.lead_source,
                 assigned_caller_name=getattr(caller, "name", None),
-                assignment_status=la_row.status if la_row is not None else None,
-                assignment_reason=la_row.assignment_reason if la_row is not None else None,
-                assigned_at=la_row.assigned_at if la_row is not None else None,
+                assignment_status=la_status,
+                assignment_reason=la_reason,
+                assigned_at=la_assigned_at,
             )
         )
     return items
@@ -100,7 +116,7 @@ def get_lead(lead_id: UUID, db: Session = Depends(get_db)):
         lead_source=lead.lead_source,
         city=lead.city,
         state=lead.state,
-        metadata=lead.metadata,
+        metadata=lead.lead_metadata,
         created_at=lead.created_at,
         assigned_caller_id=latest.caller_id if latest else None,
         assignment_status=latest.status if latest else None,
@@ -128,6 +144,7 @@ async def reassign_lead(
     db.refresh(lead)
     db.refresh(assignment)
 
+
     await connection_manager.broadcast_assignment(
         AssignmentEventOut(
             lead_id=str(lead.id),
@@ -145,7 +162,7 @@ async def reassign_lead(
         lead_source=lead.lead_source,
         city=lead.city,
         state=lead.state,
-        metadata=lead.metadata,
+        metadata=lead.lead_metadata,
         created_at=lead.created_at,
         assigned_caller_id=assignment.caller_id,
         assignment_status=assignment.status,

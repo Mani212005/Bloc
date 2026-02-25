@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from datetime import date, datetime
 from typing import Iterable, Optional
 from uuid import UUID
@@ -18,6 +20,8 @@ from app.models import (
     RoundRobinPointer,
     CallerStatus,
 )
+
+log = logging.getLogger("bloc.assignment")
 
 
 def get_business_date() -> date:
@@ -107,21 +111,26 @@ def assign_lead(
     """
     Execute smart assignment for a single lead inside an open transaction.
     """
+    t0 = time.perf_counter()
     business_date = get_business_date()
+    log.info("assign_lead start | lead_id=%s phone=%s state=%s", lead.id, lead.phone, lead.state)
 
     if forced_caller_id is not None:
         caller = db.get(Caller, forced_caller_id)
         if caller is None or caller.status != CallerStatus.ACTIVE:
             raise ValueError("Forced caller is not active or does not exist")
-        eligible_callers = [caller]
-        key = f"manual:{caller.id}"
         chosen = caller
         assignment_reason = reason_override or "manual_reassign"
+        log.info("assign_lead manual | caller=%s (%s)", caller.id, caller.name)
     else:
         eligible = _eligible_callers_for_state(db, lead.state)
+        log.info("assign_lead state_eligible | count=%d state=%s", len(eligible), lead.state)
+
         eligible = _apply_daily_cap_filter(db, eligible, business_date)
+        log.info("assign_lead cap_filtered | count=%d date=%s", len(eligible), business_date)
 
         if not eligible:
+            log.warning("assign_lead unassigned | reason=cap_reached lead_id=%s", lead.id)
             lead.unassigned = True
             assignment = LeadAssignment(
                 lead_id=lead.id,
@@ -144,6 +153,7 @@ def assign_lead(
 
         chosen = _next_round_robin_caller(db, key, eligible)
         if chosen is None:
+            log.warning("assign_lead unassigned | reason=no_eligible lead_id=%s", lead.id)
             lead.unassigned = True
             assignment = LeadAssignment(
                 lead_id=lead.id,
@@ -156,6 +166,10 @@ def assign_lead(
 
         assignment_reason = reason_override or (
             "state_round_robin" if key.startswith("state:") else "global_round_robin"
+        )
+        log.info(
+            "assign_lead chosen | caller=%s (%s) key=%s reason=%s",
+            chosen.id, chosen.name, key, assignment_reason,
         )
 
     counter = db.get(
@@ -179,5 +193,11 @@ def assign_lead(
         assignment_reason=assignment_reason,
     )
     db.add(assignment)
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    log.info(
+        "assign_lead complete | lead_id=%s caller=%s reason=%s  (%.1fms)",
+        lead.id, chosen.name, assignment_reason, elapsed_ms,
+    )
     return assignment
 
