@@ -40,7 +40,7 @@ def upgrade() -> None:
         sa.Column("daily_limit", sa.Integer(), nullable=False, server_default="0"),
         sa.Column(
             "status",
-            sa.Enum("active", "paused", name="caller_status"),
+            caller_status,
             nullable=False,
             server_default="active",
         ),
@@ -147,7 +147,7 @@ def upgrade() -> None:
         sa.Column("assignment_reason", sa.Text(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("assigned", "unassigned", name="lead_assignment_status"),
+            lead_assignment_status,
             nullable=False,
             server_default="assigned",
         ),
