@@ -31,7 +31,7 @@ def create_app() -> FastAPI:
         license_info={"name": "MIT"},
     )
 
-    origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+    origins = os.getenv("CORS_ORIGINS", "https://bloc-tan.vercel.app").split(",")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o.strip() for o in origins if o.strip()],
