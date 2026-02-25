@@ -15,11 +15,18 @@ try:
     print(f"Connecting to DB to clean orphaned objects...")
     engine = create_engine(DATABASE_URL, connect_args={"connect_timeout": 10})
     with engine.connect() as conn:
+        # Drop ALL tables and types — full clean slate
+        conn.execute(text("DROP TABLE IF EXISTS lead_assignments CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS caller_daily_counters CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS caller_states CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS rr_pointers CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS leads CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS callers CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version CASCADE"))
         conn.execute(text("DROP TYPE IF EXISTS caller_status CASCADE"))
         conn.execute(text("DROP TYPE IF EXISTS lead_assignment_status CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS alembic_version CASCADE"))
         conn.commit()
-        print("✅ Dropped orphaned enums and alembic_version (if they existed)")
+        print("✅ Dropped all tables, enums, and alembic_version")
 
     print("Running alembic upgrade head...")
     result = subprocess.run(["alembic", "upgrade", "head"], capture_output=False)
