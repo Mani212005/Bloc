@@ -46,7 +46,7 @@ class CallerOut(BaseModel):
         from_attributes = True
 
 
-class LeadBase(BaseModel):
+class LeadBase(BaseModel): # Schemas 
     name: Optional[str] = None
     phone: str
     timestamp: datetime
