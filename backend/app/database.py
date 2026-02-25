@@ -13,15 +13,6 @@ DATABASE_URL = os.getenv(
     "postgresql+psycopg2://bloc:blocpassword@localhost:5432/bloc",
 )
 
-# DEBUG: Print the URL being used (mask password for safety)
-_debug_url = DATABASE_URL
-if _debug_url and "@" in _debug_url:
-    _prefix = _debug_url.split("://")[0] + "://"
-    _after_at = _debug_url.split("@", 1)[1]
-    print(f"DATABASE_URL BEING USED: {_prefix}***@{_after_at}")
-else:
-    print(f"DATABASE_URL BEING USED: {_debug_url}")
-
 engine = create_engine(
     DATABASE_URL,
     future=True,
