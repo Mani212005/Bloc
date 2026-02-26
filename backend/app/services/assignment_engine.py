@@ -30,7 +30,7 @@ def get_business_date() -> date:
 
 
 def _eligible_callers_for_state(db: Session, state: Optional[str]) -> list[Caller]:
-    base_query = select(Caller).where(Caller.status == CallerStatus.ACTIVE)
+    base_query = select(Caller).where(Caller.status == "active")
 
     if state:
         state_q = (
@@ -117,7 +117,7 @@ def assign_lead(
 
     if forced_caller_id is not None:
         caller = db.get(Caller, forced_caller_id)
-        if caller is None or caller.status != CallerStatus.ACTIVE:
+        if caller is None or caller.status != "active":
             raise ValueError("Forced caller is not active or does not exist")
         chosen = caller
         assignment_reason = reason_override or "manual_reassign"

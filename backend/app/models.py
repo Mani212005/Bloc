@@ -35,7 +35,7 @@ class Caller(Base):
     languages: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=[])
     daily_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[CallerStatus] = mapped_column(
-        Enum(CallerStatus, name="caller_status"),
+        Enum(CallerStatus, name="caller_status", values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=CallerStatus.ACTIVE,
     )
@@ -119,7 +119,7 @@ class LeadAssignment(Base):
     )
     assignment_reason: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[LeadAssignmentStatus] = mapped_column(
-        Enum(LeadAssignmentStatus, name="lead_assignment_status"),
+        Enum(LeadAssignmentStatus, name="lead_assignment_status", values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=LeadAssignmentStatus.ASSIGNED,
     )
